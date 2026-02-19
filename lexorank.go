@@ -24,6 +24,7 @@
 package gexorank
 
 import (
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"math/big"
@@ -49,6 +50,36 @@ var ErrRankExhausted = errors.New("gexorank: rank exhausted, rebalancing require
 type LexoRank struct {
 	bucket Bucket
 	value  RankValue
+}
+
+// Scan implements [database/sql.Scanner] so a LexoRank can be read directly
+// from a database column. The column value must be a string or []byte in the
+// format "{bucket}|{value}".
+func (r *LexoRank) Scan(src any) error {
+	var s string
+	switch v := src.(type) {
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("gexorank: cannot scan %T into LexoRank", src)
+	}
+	parsed, err := Parse(s)
+	if err != nil {
+		return err
+	}
+	*r = parsed
+	return nil
+}
+
+// Value implements [database/sql/driver.Valuer] so a LexoRank can be written
+// directly to a database column as a string.
+func (r LexoRank) Value() (driver.Value, error) {
+	if r.value.value == "" {
+		return nil, nil
+	}
+	return r.String(), nil
 }
 
 // Parse parses a rank string in the format "{bucket}|{value}" and returns
@@ -148,8 +179,8 @@ func (r LexoRank) Bucket() Bucket {
 	return r.bucket
 }
 
-// Value returns the raw rank value string (without the bucket prefix).
-func (r LexoRank) Value() string {
+// RankString returns the raw rank value string (without the bucket prefix).
+func (r LexoRank) RankString() string {
 	return r.value.String()
 }
 

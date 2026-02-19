@@ -1,6 +1,7 @@
 package gexorank_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/lupppig/gexorank"
@@ -30,8 +31,8 @@ func TestParse_Valid(t *testing.T) {
 			if lr.Bucket() != tt.bucket {
 				t.Errorf("Bucket() = %v, want %v", lr.Bucket(), tt.bucket)
 			}
-			if lr.Value() != tt.value {
-				t.Errorf("Value() = %q, want %q", lr.Value(), tt.value)
+			if lr.RankString() != tt.value {
+				t.Errorf("RankString() = %q, want %q", lr.RankString(), tt.value)
 			}
 			if lr.String() != tt.input {
 				t.Errorf("String() = %q, want %q", lr.String(), tt.input)
@@ -71,8 +72,8 @@ func TestInitial(t *testing.T) {
 	if lr.Bucket() != gexorank.Bucket0 {
 		t.Errorf("Initial().Bucket() = %v, want Bucket0", lr.Bucket())
 	}
-	if lr.Value() != "iiiiii" {
-		t.Errorf("Initial().Value() = %q, want %q", lr.Value(), "iiiiii")
+	if lr.RankString() != "iiiiii" {
+		t.Errorf("Initial().RankString() = %q, want %q", lr.RankString(), "iiiiii")
 	}
 	if lr.String() != "0|iiiiii" {
 		t.Errorf("Initial().String() = %q, want %q", lr.String(), "0|iiiiii")
@@ -112,7 +113,6 @@ func TestBetween(t *testing.T) {
 				return
 			}
 
-			// Mid must sort between a and b.
 			lo, hi := a, b
 			if a.CompareTo(b) > 0 {
 				lo, hi = b, a
@@ -145,7 +145,6 @@ func TestBetween_DifferentBuckets(t *testing.T) {
 }
 
 func TestBetween_RepeatedConvergence(t *testing.T) {
-	// Repeatedly find midpoints to test precision expansion.
 	a, _ := gexorank.Parse("0|aaaaaa")
 	b, _ := gexorank.Parse("0|aaaaab")
 
@@ -157,7 +156,6 @@ func TestBetween_RepeatedConvergence(t *testing.T) {
 		if mid.CompareTo(a) <= 0 || mid.CompareTo(b) >= 0 {
 			t.Fatalf("iteration %d: mid %q not between %q and %q", i, mid.String(), a.String(), b.String())
 		}
-		// Narrow toward b.
 		a = mid
 	}
 }
@@ -253,8 +251,8 @@ func TestInNextBucket(t *testing.T) {
 	if next.Bucket() != gexorank.Bucket1 {
 		t.Errorf("InNextBucket() bucket = %v, want Bucket1", next.Bucket())
 	}
-	if next.Value() != r.Value() {
-		t.Errorf("InNextBucket() value changed from %q to %q", r.Value(), next.Value())
+	if next.RankString() != r.RankString() {
+		t.Errorf("InNextBucket() value changed from %q to %q", r.RankString(), next.RankString())
 	}
 }
 
@@ -264,8 +262,8 @@ func TestInPrevBucket(t *testing.T) {
 	if prev.Bucket() != gexorank.Bucket2 {
 		t.Errorf("InPrevBucket() bucket = %v, want Bucket2", prev.Bucket())
 	}
-	if prev.Value() != r.Value() {
-		t.Errorf("InPrevBucket() value changed from %q to %q", r.Value(), prev.Value())
+	if prev.RankString() != r.RankString() {
+		t.Errorf("InPrevBucket() value changed from %q to %q", r.RankString(), prev.RankString())
 	}
 }
 
@@ -325,7 +323,6 @@ func TestSort(t *testing.T) {
 // --- Rebalance Tests ---
 
 func TestRebalance(t *testing.T) {
-	// Create a bunch of tightly packed ranks.
 	initial := gexorank.Initial()
 	ranks := []gexorank.LexoRank{initial}
 	current := initial
@@ -340,15 +337,11 @@ func TestRebalance(t *testing.T) {
 	if len(rebalanced) != len(ranks) {
 		t.Fatalf("Rebalance returned %d ranks, want %d", len(rebalanced), len(ranks))
 	}
-
-	// All should be in bucket 1.
 	for i, r := range rebalanced {
 		if r.Bucket() != gexorank.Bucket1 {
 			t.Errorf("rebalanced[%d] bucket = %v, want Bucket1", i, r.Bucket())
 		}
 	}
-
-	// Should be in strictly ascending order.
 	for i := 1; i < len(rebalanced); i++ {
 		if rebalanced[i].CompareTo(rebalanced[i-1]) <= 0 {
 			t.Errorf("rebalanced[%d]=%q <= rebalanced[%d]=%q",
@@ -375,6 +368,66 @@ func TestRebalance_Single(t *testing.T) {
 	}
 }
 
+// --- Scan / Value Tests ---
+
+func TestScanValue_RoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"bucket 0", "0|iiiiii"},
+		{"bucket 1", "1|abc123"},
+		{"bucket 2", "2|zzzzzz"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original, _ := gexorank.Parse(tt.input)
+
+			v, err := original.Value()
+			if err != nil {
+				t.Fatalf("Value() error: %v", err)
+			}
+
+			var scanned gexorank.LexoRank
+			if err := scanned.Scan(v); err != nil {
+				t.Fatalf("Scan(%q) error: %v", v, err)
+			}
+
+			if original.CompareTo(scanned) != 0 {
+				t.Errorf("round-trip: %q → %q", original.String(), scanned.String())
+			}
+		})
+	}
+}
+
+func TestScan_ByteSlice(t *testing.T) {
+	var lr gexorank.LexoRank
+	if err := lr.Scan([]byte("0|iiiiii")); err != nil {
+		t.Fatalf("Scan([]byte) error: %v", err)
+	}
+	if lr.String() != "0|iiiiii" {
+		t.Errorf("got %q, want %q", lr.String(), "0|iiiiii")
+	}
+}
+
+func TestScan_InvalidType(t *testing.T) {
+	var lr gexorank.LexoRank
+	if err := lr.Scan(12345); err == nil {
+		t.Error("Scan(int) should return error")
+	}
+}
+
+func TestValue_ZeroValue(t *testing.T) {
+	var lr gexorank.LexoRank
+	v, err := lr.Value()
+	if err != nil {
+		t.Fatalf("Value() error: %v", err)
+	}
+	if v != nil {
+		t.Errorf("zero-value LexoRank.Value() = %v, want nil", v)
+	}
+}
+
 // --- Immutability Test ---
 
 func TestImmutability(t *testing.T) {
@@ -389,6 +442,239 @@ func TestImmutability(t *testing.T) {
 	if r.String() != original {
 		t.Errorf("rank mutated from %q to %q after operations", original, r.String())
 	}
+}
+
+// --- Examples ---
+
+func ExampleInitial() {
+	r := gexorank.Initial()
+	fmt.Println(r)
+	// Output: 0|iiiiii
+}
+
+func ExampleBetween() {
+	a, _ := gexorank.Parse("0|aaaaaa")
+	b, _ := gexorank.Parse("0|zzzzzz")
+	mid, _ := gexorank.Between(a, b)
+	fmt.Println(mid)
+	// Output: 0|n55554
+}
+
+func ExampleGenBetween_append() {
+	last, _ := gexorank.Parse("0|iiiiii")
+	rank, _ := gexorank.GenBetween(&last, nil)
+	fmt.Println(rank)
+	// Output: 0|r99998
+}
+
+func ExampleGenBetween_prepend() {
+	first, _ := gexorank.Parse("0|iiiiii")
+	rank, _ := gexorank.GenBetween(nil, &first)
+	fmt.Println(rank)
+	// Output: 0|999999
+}
+
+func ExampleGenBetween_insert() {
+	a, _ := gexorank.Parse("0|cccccc")
+	b, _ := gexorank.Parse("0|ffffff")
+	rank, _ := gexorank.GenBetween(&a, &b)
+	fmt.Println(rank)
+	// Output: 0|dvvvvv
+}
+
+func ExampleLexoRank_GenNext() {
+	r := gexorank.Initial()
+	next := r.GenNext()
+	fmt.Println(next)
+	// Output: 0|r99998
+}
+
+func ExampleLexoRank_GenPrev() {
+	r := gexorank.Initial()
+	prev := r.GenPrev()
+	fmt.Println(prev)
+	// Output: 0|999999
+}
+
+func ExampleRebalance() {
+	r1 := gexorank.Initial()
+	r2 := r1.GenNext()
+	r3 := r2.GenNext()
+
+	ranks := []gexorank.LexoRank{r1, r2, r3}
+	rebalanced := gexorank.Rebalance(ranks, gexorank.Bucket1)
+	for _, r := range rebalanced {
+		fmt.Println(r)
+	}
+	// Output:
+	// 1|8zzzzz
+	// 1|hzzzzy
+	// 1|qzzzzx
+}
+
+func ExampleSort() {
+	a, _ := gexorank.Parse("0|zzzzzz")
+	b, _ := gexorank.Parse("0|aaaaaa")
+	c, _ := gexorank.Parse("0|iiiiii")
+
+	ranks := []gexorank.LexoRank{a, b, c}
+	gexorank.Sort(ranks)
+
+	for _, r := range ranks {
+		fmt.Println(r)
+	}
+	// Output:
+	// 0|aaaaaa
+	// 0|iiiiii
+	// 0|zzzzzz
+}
+
+func ExampleParse() {
+	r, err := gexorank.Parse("2|abc123")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Printf("bucket=%s value=%s\n", r.Bucket(), r.RankString())
+	// Output: bucket=2 value=abc123
+}
+
+// --- Fuzz Tests ---
+
+func FuzzParse(f *testing.F) {
+	f.Add("0|iiiiii")
+	f.Add("1|aaaaaa")
+	f.Add("2|zzzzzz")
+	f.Add("0|000000")
+	f.Add("0|a")
+	f.Add("")
+	f.Add("invalid")
+	f.Add("3|abc")
+	f.Add("0|ABC")
+	f.Add("0|a!b")
+	f.Add("|")
+	f.Add("0|")
+	f.Add("|abc")
+	f.Add("0|aaa|bbb")
+
+	f.Fuzz(func(t *testing.T, s string) {
+		lr, err := gexorank.Parse(s)
+		if err != nil {
+			return
+		}
+		roundtrip := lr.String()
+		if roundtrip != s {
+			t.Errorf("round-trip failed: Parse(%q).String() = %q", s, roundtrip)
+		}
+		lr2, err := gexorank.Parse(roundtrip)
+		if err != nil {
+			t.Errorf("re-parse of %q failed: %v", roundtrip, err)
+		}
+		if lr.CompareTo(lr2) != 0 {
+			t.Errorf("re-parsed rank differs: %q vs %q", lr.String(), lr2.String())
+		}
+	})
+}
+
+func FuzzBetween(f *testing.F) {
+	f.Add("0|aaaaaa", "0|zzzzzz")
+	f.Add("0|aaaaaa", "0|aaaaab")
+	f.Add("0|iiiiii", "0|iiiiii")
+	f.Add("0|000001", "0|000002")
+	f.Add("0|aaaaa", "0|zzzzz")
+
+	f.Fuzz(func(t *testing.T, sa, sb string) {
+		a, err := gexorank.Parse(sa)
+		if err != nil {
+			return
+		}
+		b, err := gexorank.Parse(sb)
+		if err != nil {
+			return
+		}
+		mid, err := gexorank.Between(a, b)
+		if err != nil {
+			return
+		}
+		lo, hi := a, b
+		if a.CompareTo(b) > 0 {
+			lo, hi = b, a
+		}
+		if mid.CompareTo(lo) <= 0 {
+			t.Errorf("Between(%q, %q) = %q, not > lo", sa, sb, mid.String())
+		}
+		if mid.CompareTo(hi) >= 0 {
+			t.Errorf("Between(%q, %q) = %q, not < hi", sa, sb, mid.String())
+		}
+	})
+}
+
+func FuzzGenBetween(f *testing.F) {
+	f.Add("0|aaaaaa", "0|zzzzzz", 0)
+	f.Add("0|iiiiii", "", 1)
+	f.Add("", "0|iiiiii", 2)
+	f.Add("", "", 3)
+
+	f.Fuzz(func(t *testing.T, sa, sb string, mode int) {
+		var prev, next *gexorank.LexoRank
+		if sa != "" {
+			a, err := gexorank.Parse(sa)
+			if err != nil {
+				return
+			}
+			prev = &a
+		}
+		if sb != "" {
+			b, err := gexorank.Parse(sb)
+			if err != nil {
+				return
+			}
+			next = &b
+		}
+		result, err := gexorank.GenBetween(prev, next)
+		if err != nil {
+			return
+		}
+		if _, err := gexorank.Parse(result.String()); err != nil {
+			t.Errorf("GenBetween result %q is not parseable: %v", result.String(), err)
+		}
+		if prev != nil && next != nil {
+			lo, hi := *prev, *next
+			if prev.CompareTo(*next) > 0 {
+				lo, hi = *next, *prev
+			}
+			if result.CompareTo(lo) <= 0 {
+				t.Errorf("GenBetween(%q, %q) = %q, not > lo", sa, sb, result.String())
+			}
+			if result.CompareTo(hi) >= 0 {
+				t.Errorf("GenBetween(%q, %q) = %q, not < hi", sa, sb, result.String())
+			}
+		}
+	})
+}
+
+func FuzzScanValue(f *testing.F) {
+	f.Add("0|iiiiii")
+	f.Add("1|abc123")
+	f.Add("2|zzzzzz")
+
+	f.Fuzz(func(t *testing.T, s string) {
+		original, err := gexorank.Parse(s)
+		if err != nil {
+			return
+		}
+		v, err := original.Value()
+		if err != nil {
+			t.Fatalf("Value() error: %v", err)
+		}
+		var scanned gexorank.LexoRank
+		if err := scanned.Scan(v); err != nil {
+			t.Fatalf("Scan(%q) error: %v", v, err)
+		}
+		if original.CompareTo(scanned) != 0 {
+			t.Errorf("round-trip: %q → %q", original.String(), scanned.String())
+		}
+	})
 }
 
 // --- Benchmarks ---

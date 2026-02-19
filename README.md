@@ -66,11 +66,13 @@ func main() {
 | `GenNext()` | Rank after this one |
 | `GenPrev()` | Rank before this one |
 | `Bucket()` | Returns the bucket (0, 1, or 2) |
-| `Value()` | Raw rank value without bucket prefix |
+| `RankString()` | Raw rank value without bucket prefix |
 | `String()` | Full string: `"{bucket}\|{value}"` |
 | `CompareTo(other)` | Returns -1, 0, or 1 |
 | `InNextBucket()` | Same value in the next bucket |
 | `InPrevBucket()` | Same value in the previous bucket |
+
+LexoRank also implements `database/sql.Scanner` and `driver.Valuer`, so it can be used directly as a GORM/sqlx struct field.
 
 ## `GenBetween` — The One Function You Need
 
@@ -111,19 +113,18 @@ SELECT * FROM tasks ORDER BY rank ASC;
 
 ```go
 type Task struct {
-    ID    uint   `gorm:"primaryKey"`
-    Title string `gorm:"not null"`
-    Rank  string `gorm:"not null;index;size:256"`
+    ID    uint      `gorm:"primaryKey"`
+    Title string    `gorm:"not null"`
+    Rank  gexorank.LexoRank `gorm:"not null;index;type:varchar(256)"`
 }
 
 // Append a new task
 var last Task
 db.Order("rank DESC").First(&last)
 
-lastRank, _ := gexorank.Parse(last.Rank)
-newRank, _ := gexorank.GenBetween(&lastRank, nil)
+newRank, _ := gexorank.GenBetween(&last.Rank, nil)
 
-db.Create(&Task{Title: "New task", Rank: newRank.String()})
+db.Create(&Task{Title: "New task", Rank: newRank})
 ```
 
 See [`examples/gorm/main.go`](examples/gorm/main.go) for a full example.
