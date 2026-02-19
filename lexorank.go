@@ -158,27 +158,34 @@ func GenBetween(prev, next *LexoRank) (LexoRank, error) {
 }
 
 // GenNext returns a new LexoRank that sorts after r.
-// The new rank is computed as the midpoint between r and the maximum value.
+//
+// It appends the midpoint character to r's value, producing a rank that
+// lexicographically sorts after r while leaving room for future inserts.
+// This is O(1) and avoids big.Int convergence toward the maximum.
 func (r LexoRank) GenNext() LexoRank {
-	maxVal := MaxValue(r.value.Len())
-	mid, err := r.value.Between(maxVal)
-	if err != nil {
+	// "iiiiii" + "i" = "iiiiiii" which sorts after "iiiiii" and before "zzzzzz".
+	v := r.value.value + string(alphabet.Mid())
+	if len(v) > MaxLength {
 		// Fallback: increment the value directly.
 		return LexoRank{bucket: r.bucket, value: r.value.Increment()}
 	}
-	return LexoRank{bucket: r.bucket, value: mid}
+	return LexoRank{bucket: r.bucket, value: newRankValue(v)}
 }
 
 // GenPrev returns a new LexoRank that sorts before r.
-// The new rank is computed as the midpoint between the minimum value and r.
+//
+// It decrements the last character of r's value and appends the midpoint
+// character, producing a rank that sorts before r. This is O(1) and avoids
+// big.Int convergence toward the minimum.
 func (r LexoRank) GenPrev() LexoRank {
-	minVal := MinValue(r.value.Len())
-	mid, err := minVal.Between(r.value)
-	if err != nil {
-		// Fallback: decrement the value directly.
-		return LexoRank{bucket: r.bucket, value: r.value.Decrement()}
+	// "iiiiii" → decrement last → "iiiiih", then append "i" → "iiiiihi"
+	// "iiiiihi" sorts after "iiiiih" and before "iiiiii".
+	dec := r.value.Decrement()
+	v := dec.value + string(alphabet.Mid())
+	if len(v) > MaxLength {
+		return LexoRank{bucket: r.bucket, value: dec}
 	}
-	return LexoRank{bucket: r.bucket, value: mid}
+	return LexoRank{bucket: r.bucket, value: newRankValue(v)}
 }
 
 // Bucket returns the bucket of this rank.

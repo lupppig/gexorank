@@ -612,14 +612,14 @@ func ExampleGenBetween_append() {
 	last, _ := gexorank.Parse("0|iiiiii")
 	rank, _ := gexorank.GenBetween(&last, nil)
 	fmt.Println(rank)
-	// Output: 0|r99998
+	// Output: 0|iiiiiii
 }
 
 func ExampleGenBetween_prepend() {
 	first, _ := gexorank.Parse("0|iiiiii")
 	rank, _ := gexorank.GenBetween(nil, &first)
 	fmt.Println(rank)
-	// Output: 0|999999
+	// Output: 0|iiiiihi
 }
 
 func ExampleGenBetween_insert() {
@@ -634,14 +634,14 @@ func ExampleLexoRank_GenNext() {
 	r := gexorank.Initial()
 	next := r.GenNext()
 	fmt.Println(next)
-	// Output: 0|r99998
+	// Output: 0|iiiiiii
 }
 
 func ExampleLexoRank_GenPrev() {
 	r := gexorank.Initial()
 	prev := r.GenPrev()
 	fmt.Println(prev)
-	// Output: 0|999999
+	// Output: 0|iiiiihi
 }
 
 func ExampleRebalance() {

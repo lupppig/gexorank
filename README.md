@@ -35,14 +35,14 @@ func main() {
     first := gexorank.Initial() // "0|iiiiii"
 
     // Append after it
-    second, _ := gexorank.GenBetween(&first, nil) // "0|r99998"
+    second, _ := gexorank.GenBetween(&first, nil) // "0|iiiiiii"
 
     // Insert between
     middle, _ := gexorank.GenBetween(&first, &second) // midpoint
 
     fmt.Println(first)  // 0|iiiiii
-    fmt.Println(middle) // 0|n22226
-    fmt.Println(second) // 0|r99998
+    fmt.Println(middle) // 0|iiiiii9
+    fmt.Println(second) // 0|iiiiiii
 }
 ```
 
@@ -264,11 +264,11 @@ goos: linux
 goarch: amd64
 cpu: Intel(R) Core(TM) i7-7600U CPU @ 2.80GHz
 
-BenchmarkParse-4            22262826        58.93 ns/op      32 B/op    1 allocs/op
-BenchmarkBetween-4           1000000      1016 ns/op        264 B/op   12 allocs/op
-BenchmarkGenNext-4             37693     30167 ns/op       1807 B/op   19 allocs/op
-BenchmarkGenPrev-4            422378      2887 ns/op        388 B/op    7 allocs/op
-BenchmarkRebalance100-4        32313     33943 ns/op      10872 B/op  513 allocs/op
+BenchmarkParse-4            22131580        53.32 ns/op      32 B/op    1 allocs/op
+BenchmarkBetween-4           1327888       899.9 ns/op      264 B/op   12 allocs/op
+BenchmarkGenNext-4             67490     15624 ns/op        910 B/op   10 allocs/op
+BenchmarkGenPrev-4             46514     24085 ns/op        910 B/op   10 allocs/op
+BenchmarkRebalance100-4        30820     35825 ns/op      10872 B/op  513 allocs/op
 ```
 
 Run locally: `go test -bench=. -benchmem ./...`
