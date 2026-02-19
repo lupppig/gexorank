@@ -71,6 +71,9 @@ func main() {
 | `CompareTo(other)` | Returns -1, 0, or 1 |
 | `InNextBucket()` | Same value in the next bucket |
 | `InPrevBucket()` | Same value in the previous bucket |
+| `Len()` | Length of the rank value (grows with convergence) |
+| `MaxLen()` | Maximum allowed length (128) before exhaustion |
+| `NeedsRebalance(t)` | True if `Len() >= t * MaxLen()` (e.g. `t=0.75`) |
 
 LexoRank also implements `database/sql.Scanner` and `driver.Valuer`, so it can be used directly as a GORM/sqlx struct field.
 
@@ -203,6 +206,18 @@ func InsertBetween(db *gorm.DB, prev, next *gexorank.LexoRank, title string) err
 ## Rebalancing
 
 When ranks are inserted repeatedly between the same two neighbors, the rank strings grow longer. When they exceed `MaxLength` (128 chars), `Between` returns `ErrRankExhausted`.
+
+### Monitoring
+
+Detect rank growth before it becomes a problem:
+
+```go
+// After every insert, check the new rank
+if newRank.NeedsRebalance(0.75) {
+    log.Warnf("rank %q is at %d/%d chars, consider rebalancing",
+        newRank, newRank.Len(), newRank.MaxLen())
+}
+```
 
 **Recovery pattern:**
 

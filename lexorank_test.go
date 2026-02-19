@@ -428,6 +428,43 @@ func TestValue_ZeroValue(t *testing.T) {
 	}
 }
 
+// --- Rank Length Monitoring Tests ---
+
+func TestLen(t *testing.T) {
+	r := gexorank.Initial()
+	if r.Len() != 6 {
+		t.Errorf("Initial().Len() = %d, want 6", r.Len())
+	}
+}
+
+func TestLen_GrowsWithConvergence(t *testing.T) {
+	a, _ := gexorank.Parse("0|aaaaaa")
+	b, _ := gexorank.Parse("0|aaaaab")
+
+	// Force precision expansion.
+	mid, _ := gexorank.Between(a, b)
+	if mid.Len() <= 6 {
+		t.Errorf("Between adjacent ranks should extend precision, got Len()=%d", mid.Len())
+	}
+}
+
+func TestMaxLen(t *testing.T) {
+	r := gexorank.Initial()
+	if r.MaxLen() != 128 {
+		t.Errorf("MaxLen() = %d, want 128", r.MaxLen())
+	}
+}
+
+func TestNeedsRebalance(t *testing.T) {
+	r := gexorank.Initial() // Len=6, MaxLen=128
+	if r.NeedsRebalance(0.75) {
+		t.Error("fresh rank should not need rebalance at 0.75")
+	}
+	if !r.NeedsRebalance(0.01) {
+		t.Error("fresh rank should need rebalance at 0.01 threshold")
+	}
+}
+
 // --- Immutability Test ---
 
 func TestImmutability(t *testing.T) {

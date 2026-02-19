@@ -191,6 +191,34 @@ func (r LexoRank) RankString() string {
 	return r.value.String()
 }
 
+// Len returns the length of the rank value string (excluding the bucket prefix
+// and separator). A freshly created rank via [Initial] has a length of 6.
+// As ranks are inserted between close neighbors, precision expands and Len
+// grows. When it reaches [MaxLen], [Between] returns [ErrRankExhausted].
+func (r LexoRank) Len() int {
+	return len(r.value.value)
+}
+
+// MaxLen returns the maximum allowed rank value length (128).
+// When [Len] reaches this limit, [Between] returns [ErrRankExhausted] and
+// a [Rebalance] is required.
+func (r LexoRank) MaxLen() int {
+	return MaxLength
+}
+
+// NeedsRebalance reports whether the rank value length has reached or exceeded
+// the given threshold fraction (0.0–1.0) of [MaxLen]. For example, a threshold
+// of 0.75 triggers when Len() >= 96.
+//
+// A typical monitoring pattern:
+//
+//	if rank.NeedsRebalance(0.75) {
+//	    log.Warn("ranks growing long, consider rebalancing")
+//	}
+func (r LexoRank) NeedsRebalance(threshold float64) bool {
+	return float64(r.Len()) >= threshold*float64(MaxLength)
+}
+
 // String returns the full rank string in the format "{bucket}|{value}".
 func (r LexoRank) String() string {
 	return r.bucket.String() + separator + r.value.String()
