@@ -82,6 +82,49 @@ func (r LexoRank) Value() (driver.Value, error) {
 	return r.String(), nil
 }
 
+// MarshalJSON implements [encoding/json.Marshaler] so a LexoRank serializes
+// as a JSON string (e.g. "0|iiiiii") rather than a struct.
+func (r LexoRank) MarshalJSON() ([]byte, error) {
+	if r.value.value == "" {
+		return []byte("null"), nil
+	}
+	return []byte(`"` + r.String() + `"`), nil
+}
+
+// UnmarshalJSON implements [encoding/json.Unmarshaler] so a LexoRank can be
+// deserialized from a JSON string.
+func (r *LexoRank) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	// Strip surrounding quotes.
+	s := string(data)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	parsed, err := Parse(s)
+	if err != nil {
+		return err
+	}
+	*r = parsed
+	return nil
+}
+
+// MarshalText implements [encoding.TextMarshaler].
+func (r LexoRank) MarshalText() ([]byte, error) {
+	return []byte(r.String()), nil
+}
+
+// UnmarshalText implements [encoding.TextUnmarshaler].
+func (r *LexoRank) UnmarshalText(data []byte) error {
+	parsed, err := Parse(string(data))
+	if err != nil {
+		return err
+	}
+	*r = parsed
+	return nil
+}
+
 // Parse parses a rank string in the format "{bucket}|{value}" and returns
 // a validated LexoRank. It returns an error if the format is invalid,
 // the bucket is unrecognized, or the value contains non-base36 characters.
@@ -110,6 +153,22 @@ func Initial() LexoRank {
 	return LexoRank{
 		bucket: Bucket0,
 		value:  MidValue(DefaultLength),
+	}
+}
+
+// Min returns the minimum possible rank in bucket 0.
+func Min() LexoRank {
+	return LexoRank{
+		bucket: Bucket0,
+		value:  MinValue(DefaultLength),
+	}
+}
+
+// Max returns the maximum possible rank in bucket 0.
+func Max() LexoRank {
+	return LexoRank{
+		bucket: Bucket0,
+		value:  MaxValue(DefaultLength),
 	}
 }
 

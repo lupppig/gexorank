@@ -1,6 +1,7 @@
 package gexorank_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -488,6 +489,100 @@ func TestImmutability(t *testing.T) {
 
 	if r.String() != original {
 		t.Errorf("rank mutated from %q to %q after operations", original, r.String())
+	}
+}
+
+// --- JSON / Text Marshaling Tests ---
+
+func TestMarshalJSON(t *testing.T) {
+	type Item struct {
+		Rank gexorank.LexoRank `json:"rank"`
+	}
+
+	item := Item{Rank: gexorank.Initial()}
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+	want := `{"rank":"0|iiiiii"}`
+	if string(data) != want {
+		t.Errorf("Marshal = %s, want %s", data, want)
+	}
+
+	var decoded Item
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if decoded.Rank.CompareTo(item.Rank) != 0 {
+		t.Errorf("round-trip: %q → %q", item.Rank, decoded.Rank)
+	}
+}
+
+func TestMarshalJSON_ZeroValue(t *testing.T) {
+	var lr gexorank.LexoRank
+	data, err := json.Marshal(lr)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+	if string(data) != "null" {
+		t.Errorf("zero-value Marshal = %s, want null", data)
+	}
+}
+
+func TestUnmarshalJSON_Null(t *testing.T) {
+	var lr gexorank.LexoRank
+	if err := json.Unmarshal([]byte("null"), &lr); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if lr.String() != "0|" {
+		// zero-value LexoRank
+	}
+}
+
+func TestMarshalText_RoundTrip(t *testing.T) {
+	r := gexorank.Initial()
+	data, err := r.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText error: %v", err)
+	}
+	var decoded gexorank.LexoRank
+	if err := decoded.UnmarshalText(data); err != nil {
+		t.Fatalf("UnmarshalText error: %v", err)
+	}
+	if decoded.CompareTo(r) != 0 {
+		t.Errorf("round-trip: %q → %q", r, decoded)
+	}
+}
+
+// --- Min / Max Tests ---
+
+func TestMin(t *testing.T) {
+	min := gexorank.Min()
+	initial := gexorank.Initial()
+	if min.CompareTo(initial) >= 0 {
+		t.Errorf("Min() %q should be < Initial() %q", min, initial)
+	}
+	if min.Bucket() != gexorank.Bucket0 {
+		t.Errorf("Min() bucket = %v, want Bucket0", min.Bucket())
+	}
+}
+
+func TestMax(t *testing.T) {
+	max := gexorank.Max()
+	initial := gexorank.Initial()
+	if max.CompareTo(initial) <= 0 {
+		t.Errorf("Max() %q should be > Initial() %q", max, initial)
+	}
+	if max.Bucket() != gexorank.Bucket0 {
+		t.Errorf("Max() bucket = %v, want Bucket0", max.Bucket())
+	}
+}
+
+func TestMinMaxOrdering(t *testing.T) {
+	min := gexorank.Min()
+	max := gexorank.Max()
+	if min.CompareTo(max) >= 0 {
+		t.Errorf("Min() %q should be < Max() %q", min, max)
 	}
 }
 

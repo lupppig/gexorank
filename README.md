@@ -53,6 +53,8 @@ func main() {
 | Function | Description |
 |---|---|
 | `Initial()` | First rank in bucket 0 (midpoint of space) |
+| `Min()` | Minimum possible rank in bucket 0 |
+| `Max()` | Maximum possible rank in bucket 0 |
 | `Parse(s)` | Parse & validate a rank string like `"0\|abc123"` |
 | `Between(a, b)` | Midpoint between two ranks (same bucket) |
 | `GenBetween(prev, next)` | **Recommended.** Nil-safe insert: prepend, append, or between |
@@ -75,7 +77,7 @@ func main() {
 | `MaxLen()` | Maximum allowed length (128) before exhaustion |
 | `NeedsRebalance(t)` | True if `Len() >= t * MaxLen()` (e.g. `t=0.75`) |
 
-LexoRank also implements `database/sql.Scanner` and `driver.Valuer`, so it can be used directly as a GORM/sqlx struct field.
+LexoRank also implements `database/sql.Scanner`, `driver.Valuer`, `json.Marshaler`, `json.Unmarshaler`, `encoding.TextMarshaler`, and `encoding.TextUnmarshaler` — it works seamlessly with GORM, sqlx, and JSON APIs.
 
 ## `GenBetween` — The One Function You Need
 
