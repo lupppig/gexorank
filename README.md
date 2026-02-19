@@ -8,11 +8,9 @@ Reorder items in a list by updating **one row** instead of re-indexing the entir
 
 ## Features
 
-- **Zero dependencies** — only Go standard library (`math/big`, `strings`, `errors`)
-- **Immutable & concurrent** — no mutexes needed, safe to share across goroutines
-- **Three-bucket rebalancing** — handles rank exhaustion gracefully
-- **Base36 encoding** — compact, sortable strings (`0-9a-z`)
-- **Canonical form** — fixed-width, zero-padded values guarantee `ORDER BY rank ASC` correctness
+- ero dependencies
+- Immutable & concurrent
+- Three-bucket rebalancing
 
 ## Install
 
