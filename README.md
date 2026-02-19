@@ -129,6 +129,77 @@ db.Create(&Task{Title: "New task", Rank: newRank})
 
 See [`examples/gorm/main.go`](examples/gorm/main.go) for a full example.
 
+## Concurrency
+
+The rank computation itself is thread-safe (immutable types, no shared state). However, the **workflow** — read neighbors → compute rank → write — is not atomic. Two concurrent inserts between the same two items will produce **identical ranks**, corrupting sort order.
+
+You must serialize this at the database level. Two patterns:
+
+### Option A: Pessimistic Locking (SELECT … FOR UPDATE)
+
+Lock the neighbor rows so only one transaction can insert between them at a time.
+
+```go
+tx := db.Begin()
+
+// Lock the two neighbors
+var prev, next Task
+tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+    Where("id IN ?", []uint{prevID, nextID}).
+    Order("rank ASC").
+    Find(&[]Task{prev, next})
+
+newRank, _ := gexorank.GenBetween(&prev.Rank, &next.Rank)
+tx.Create(&Task{Title: "New", Rank: newRank})
+
+tx.Commit()
+```
+
+**Pros:** Simple, deterministic.
+**Cons:** Holds locks, serializes concurrent inserts in the same region.
+
+### Option B: Optimistic Concurrency (UNIQUE constraint + retry)
+
+Add a unique constraint on `rank` and retry on conflict.
+
+```sql
+ALTER TABLE tasks ADD CONSTRAINT uq_tasks_rank UNIQUE (rank);
+```
+
+```go
+const maxRetries = 3
+
+func InsertBetween(db *gorm.DB, prev, next *gexorank.LexoRank, title string) error {
+    for range maxRetries {
+        newRank, err := gexorank.GenBetween(prev, next)
+        if err != nil {
+            return err
+        }
+
+        result := db.Create(&Task{Title: title, Rank: newRank})
+        if result.Error == nil {
+            return nil
+        }
+
+        // Conflict — re-read neighbors and retry
+        // (the winner's insert shifted the gap)
+        prev, next = refreshNeighbors(db)
+    }
+    return fmt.Errorf("rank insert failed after %d retries", maxRetries)
+}
+```
+
+**Pros:** No row locks, higher throughput.
+**Cons:** Retry logic, slightly more code.
+
+### Which to choose?
+
+| Scenario | Recommendation |
+|---|---|
+| Low concurrency / simple app | **Pessimistic** — less code, good enough |
+| High concurrency / real-time collaboration | **Optimistic** — better throughput |
+| Bulk import | Neither — use `Rebalance` to assign all ranks at once |
+
 ## Rebalancing
 
 When ranks are inserted repeatedly between the same two neighbors, the rank strings grow longer. When they exceed `MaxLength` (128 chars), `Between` returns `ErrRankExhausted`.

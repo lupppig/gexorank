@@ -136,6 +136,13 @@ func Between(a, b LexoRank) (LexoRank, error) {
 //   - If both are provided, the rank is placed between them.
 //   - If both are nil, [Initial] is returned.
 //
+// # Concurrency
+//
+// The read-compute-write cycle (fetch neighbors → GenBetween → insert) is NOT
+// atomic. Two concurrent inserts between the same neighbors will produce the
+// same rank. Callers must serialize this at the database level using row-level
+// locks (SELECT … FOR UPDATE) or an optimistic retry with a UNIQUE constraint.
+//
 // This is the recommended entry point for most use cases.
 func GenBetween(prev, next *LexoRank) (LexoRank, error) {
 	switch {
