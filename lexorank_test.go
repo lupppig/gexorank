@@ -1,6 +1,7 @@
 package gexorank_test
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -478,6 +479,116 @@ func TestImmutability(t *testing.T) {
 
 	if r.String() != original {
 		t.Errorf("rank mutated from %q to %q after operations", original, r.String())
+	}
+}
+
+// --- InsertBetween Tests ---
+
+func TestInsertBetween_HappyPath(t *testing.T) {
+	a := gexorank.Initial()
+	b := a.GenNext()
+
+	rank, err := gexorank.InsertBetween(
+		func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+			return &a, &b, nil
+		},
+		func(rank gexorank.LexoRank) error {
+			return nil // success on first try
+		},
+		3,
+	)
+	if err != nil {
+		t.Fatalf("InsertBetween error: %v", err)
+	}
+	if rank.CompareTo(a) <= 0 || rank.CompareTo(b) >= 0 {
+		t.Errorf("rank %q not between %q and %q", rank, a, b)
+	}
+}
+
+func TestInsertBetween_RetryOnConflict(t *testing.T) {
+	a := gexorank.Initial()
+	attempts := 0
+
+	rank, err := gexorank.InsertBetween(
+		func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+			return &a, nil, nil // append
+		},
+		func(rank gexorank.LexoRank) error {
+			attempts++
+			if attempts < 3 {
+				return fmt.Errorf("unique constraint violation")
+			}
+			return nil // succeed on 3rd attempt
+		},
+		5,
+	)
+	if err != nil {
+		t.Fatalf("InsertBetween error: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+	if rank.CompareTo(a) <= 0 {
+		t.Errorf("rank %q should be after %q", rank, a)
+	}
+}
+
+func TestInsertBetween_MaxRetriesExceeded(t *testing.T) {
+	a := gexorank.Initial()
+
+	_, err := gexorank.InsertBetween(
+		func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+			return &a, nil, nil
+		},
+		func(rank gexorank.LexoRank) error {
+			return fmt.Errorf("always fails")
+		},
+		3,
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, gexorank.ErrMaxRetriesExceeded) {
+		t.Errorf("expected ErrMaxRetriesExceeded, got: %v", err)
+	}
+}
+
+func TestInsertBetween_NeighborError(t *testing.T) {
+	neighborErr := fmt.Errorf("db connection lost")
+
+	_, err := gexorank.InsertBetween(
+		func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+			return nil, nil, neighborErr
+		},
+		func(rank gexorank.LexoRank) error {
+			t.Fatal("insert should not be called")
+			return nil
+		},
+		3,
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, neighborErr) {
+		t.Errorf("expected wrapped neighborErr, got: %v", err)
+	}
+}
+
+func TestInsertBetween_BothNil(t *testing.T) {
+	rank, err := gexorank.InsertBetween(
+		func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+			return nil, nil, nil // empty list
+		},
+		func(rank gexorank.LexoRank) error {
+			return nil
+		},
+		1,
+	)
+	if err != nil {
+		t.Fatalf("InsertBetween error: %v", err)
+	}
+	if rank.String() != gexorank.Initial().String() {
+		t.Errorf("expected Initial rank, got %q", rank)
 	}
 }
 

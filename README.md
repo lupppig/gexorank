@@ -136,7 +136,28 @@ See [`examples/gorm/main.go`](examples/gorm/main.go) for a full example.
 
 The rank computation itself is thread-safe (immutable types, no shared state). However, the **workflow** — read neighbors → compute rank → write — is not atomic. Two concurrent inserts between the same two items will produce **identical ranks**, corrupting sort order.
 
-You must serialize this at the database level. Two patterns:
+### `InsertBetween` — The Safe Way
+
+Use the built-in retry helper. You provide two callbacks, the library handles the rest:
+
+```go
+rank, err := gexorank.InsertBetween(
+    func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+        var prev, next Task
+        db.Where("id = ?", prevID).First(&prev)
+        db.Where("id = ?", nextID).First(&next)
+        return &prev.Rank, &next.Rank, nil
+    },
+    func(rank gexorank.LexoRank) error {
+        return db.Create(&Task{Title: "New", Rank: rank}).Error
+    },
+    3, // max retries
+)
+```
+
+> **Requires** a `UNIQUE` constraint on the rank column so concurrent duplicates trigger a retry.
+
+If you need more control, two manual patterns are available:
 
 ### Option A: Pessimistic Locking (SELECT … FOR UPDATE)
 
