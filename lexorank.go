@@ -98,6 +98,27 @@ func Between(a, b LexoRank) (LexoRank, error) {
 	return LexoRank{bucket: a.bucket, value: mid}, nil
 }
 
+// GenBetween returns a new LexoRank that sorts between prev and next.
+// Either prev or next (but not both) may be nil:
+//   - If prev is nil, the rank is placed before next (prepend).
+//   - If next is nil, the rank is placed after prev (append).
+//   - If both are provided, the rank is placed between them.
+//   - If both are nil, [Initial] is returned.
+//
+// This is the recommended entry point for most use cases.
+func GenBetween(prev, next *LexoRank) (LexoRank, error) {
+	switch {
+	case prev == nil && next == nil:
+		return Initial(), nil
+	case prev == nil:
+		return next.GenPrev(), nil
+	case next == nil:
+		return prev.GenNext(), nil
+	default:
+		return Between(*prev, *next)
+	}
+}
+
 // GenNext returns a new LexoRank that sorts after r.
 // The new rank is computed as the midpoint between r and the maximum value.
 func (r LexoRank) GenNext() LexoRank {
