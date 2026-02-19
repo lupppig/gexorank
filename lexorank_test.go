@@ -203,6 +203,15 @@ func TestGenPrev_SameBucket(t *testing.T) {
 	}
 }
 
+func TestGenPrev_MinValue(t *testing.T) {
+	min, _ := gexorank.Parse("0|000000")
+	prev := min.GenPrev()
+	// At the absolute minimum, GenPrev cannot go lower — returns the same value.
+	if prev.String() != min.String() {
+		t.Errorf("GenPrev(000000) = %q, want %q (floor of ranking space)", prev.String(), min.String())
+	}
+}
+
 // --- Bucket Tests ---
 
 func TestBucket_Rotation(t *testing.T) {

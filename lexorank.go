@@ -178,6 +178,13 @@ func (r LexoRank) GenNext() LexoRank {
 // character, producing a rank that sorts before r. This is O(1) and avoids
 // big.Int convergence toward the minimum.
 func (r LexoRank) GenPrev() LexoRank {
+	// If value is already at minimum (all zeros), there is no rank that
+	// sorts before it. Return as-is — this is the floor of the ranking space.
+	minVal := MinValue(r.value.Len())
+	if r.value.CompareTo(minVal) == 0 {
+		return r
+	}
+
 	// "iiiiii" → decrement last → "iiiiih", then append "i" → "iiiiihi"
 	// "iiiiihi" sorts after "iiiiih" and before "iiiiii".
 	dec := r.value.Decrement()
