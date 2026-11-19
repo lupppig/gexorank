@@ -204,13 +204,25 @@ func TestGenPrev_SameBucket(t *testing.T) {
 	}
 }
 
-func TestGenPrev_MinValue(t *testing.T) {
+func TestBefore_MinValue(t *testing.T) {
 	min, _ := gexorank.Parse("0|000000")
-	prev := min.GenPrev()
-	// At the absolute minimum, GenPrev cannot go lower — returns the same value.
-	if prev.String() != min.String() {
-		t.Errorf("GenPrev(000000) = %q, want %q (floor of ranking space)", prev.String(), min.String())
+	// Nothing sorts before the all-zero floor: report it instead of
+	// returning a duplicate.
+	if _, err := gexorank.Before(min); !errors.Is(err, gexorank.ErrRankExhausted) {
+		t.Errorf("Before(000000) error = %v, want ErrRankExhausted", err)
 	}
+	if _, err := gexorank.GenBetween(nil, &min); !errors.Is(err, gexorank.ErrRankExhausted) {
+		t.Errorf("GenBetween(nil, 000000) error = %v, want ErrRankExhausted", err)
+	}
+}
+
+func TestGenPrev_PanicsWhenExhausted(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("GenPrev(Min()) should panic")
+		}
+	}()
+	_ = gexorank.Min().GenPrev()
 }
 
 // --- Bucket Tests ---
@@ -305,10 +317,12 @@ func TestCompareTo(t *testing.T) {
 }
 
 func TestCompareTo_DifferentLengths(t *testing.T) {
+	// Ranks compare byte-wise, like a database column with binary collation:
+	// a shorter rank sorts before any longer rank it is a prefix of.
 	a, _ := gexorank.Parse("0|aaa")
 	b, _ := gexorank.Parse("0|aaa000")
-	if got := a.CompareTo(b); got != 0 {
-		t.Errorf("(%q).CompareTo(%q) = %d, want 0 (equivalent with zero-padding)", a.String(), b.String(), got)
+	if got := a.CompareTo(b); got != -1 {
+		t.Errorf("(%q).CompareTo(%q) = %d, want -1", a.String(), b.String(), got)
 	}
 }
 
@@ -620,7 +634,7 @@ func TestInsertBetween_RetryOnConflict(t *testing.T) {
 		func(rank gexorank.LexoRank) error {
 			attempts++
 			if attempts < 3 {
-				return fmt.Errorf("unique constraint violation")
+				return fmt.Errorf("%w: unique constraint violation", gexorank.ErrConflict)
 			}
 			return nil // succeed on 3rd attempt
 		},
@@ -645,7 +659,7 @@ func TestInsertBetween_MaxRetriesExceeded(t *testing.T) {
 			return &a, nil, nil
 		},
 		func(rank gexorank.LexoRank) error {
-			return fmt.Errorf("always fails")
+			return fmt.Errorf("always conflicts: %w", gexorank.ErrConflict)
 		},
 		3,
 	)
@@ -654,6 +668,62 @@ func TestInsertBetween_MaxRetriesExceeded(t *testing.T) {
 	}
 	if !errors.Is(err, gexorank.ErrMaxRetriesExceeded) {
 		t.Errorf("expected ErrMaxRetriesExceeded, got: %v", err)
+	}
+	if !errors.Is(err, gexorank.ErrConflict) {
+		t.Errorf("expected last conflict error to be wrapped, got: %v", err)
+	}
+}
+
+func TestInsertBetween_NonConflictErrorIsFatal(t *testing.T) {
+	a := gexorank.Initial()
+	fatal := errors.New("connection refused")
+	attempts := 0
+
+	_, err := gexorank.InsertBetween(
+		func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+			return &a, nil, nil
+		},
+		func(rank gexorank.LexoRank) error {
+			attempts++
+			return fatal
+		},
+		5,
+	)
+	if attempts != 1 {
+		t.Errorf("non-conflict error retried: %d attempts, want 1", attempts)
+	}
+	if !errors.Is(err, fatal) {
+		t.Errorf("expected wrapped fatal error, got: %v", err)
+	}
+	if errors.Is(err, gexorank.ErrMaxRetriesExceeded) {
+		t.Errorf("non-conflict error should not report ErrMaxRetriesExceeded: %v", err)
+	}
+}
+
+func TestInsertBetweenFunc_CustomConflict(t *testing.T) {
+	a := gexorank.Initial()
+	dup := errors.New("duplicate key")
+	attempts := 0
+
+	_, err := gexorank.InsertBetweenFunc(
+		func() (*gexorank.LexoRank, *gexorank.LexoRank, error) {
+			return &a, nil, nil
+		},
+		func(rank gexorank.LexoRank) error {
+			attempts++
+			if attempts < 2 {
+				return dup
+			}
+			return nil
+		},
+		func(err error) bool { return errors.Is(err, dup) },
+		3,
+	)
+	if err != nil {
+		t.Fatalf("InsertBetweenFunc error: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
 	}
 }
 
@@ -716,14 +786,14 @@ func ExampleGenBetween_append() {
 	last, _ := gexorank.Parse("0|iiiiii")
 	rank, _ := gexorank.GenBetween(&last, nil)
 	fmt.Println(rank)
-	// Output: 0|iiiiiii
+	// Output: 0|iiijii
 }
 
 func ExampleGenBetween_prepend() {
 	first, _ := gexorank.Parse("0|iiiiii")
 	rank, _ := gexorank.GenBetween(nil, &first)
 	fmt.Println(rank)
-	// Output: 0|iiiiihi
+	// Output: 0|iiihii
 }
 
 func ExampleGenBetween_insert() {
@@ -734,18 +804,18 @@ func ExampleGenBetween_insert() {
 	// Output: 0|dvvvvv
 }
 
-func ExampleLexoRank_GenNext() {
+func ExampleAfter() {
 	r := gexorank.Initial()
-	next := r.GenNext()
+	next, _ := gexorank.After(r)
 	fmt.Println(next)
-	// Output: 0|iiiiiii
+	// Output: 0|iiijii
 }
 
-func ExampleLexoRank_GenPrev() {
+func ExampleBefore() {
 	r := gexorank.Initial()
-	prev := r.GenPrev()
+	prev, _ := gexorank.Before(r)
 	fmt.Println(prev)
-	// Output: 0|iiiiihi
+	// Output: 0|iiihii
 }
 
 func ExampleRebalance() {
@@ -866,6 +936,9 @@ func FuzzGenBetween(f *testing.F) {
 	f.Add("0|iiiiii", "", 1)
 	f.Add("", "0|iiiiii", 2)
 	f.Add("", "", 3)
+	f.Add("0|zzzzzz", "", 4)
+	f.Add("", "0|000001", 5)
+	f.Add("0|a", "0|a0", 6)
 
 	f.Fuzz(func(t *testing.T, sa, sb string, mode int) {
 		var prev, next *gexorank.LexoRank
@@ -889,6 +962,15 @@ func FuzzGenBetween(f *testing.F) {
 		}
 		if _, err := gexorank.Parse(result.String()); err != nil {
 			t.Errorf("GenBetween result %q is not parseable: %v", result.String(), err)
+		}
+		if prev != nil && next == nil && result.CompareTo(*prev) <= 0 {
+			t.Errorf("GenBetween(%q, nil) = %q, not after prev", sa, result.String())
+		}
+		if prev == nil && next != nil && result.CompareTo(*next) >= 0 {
+			t.Errorf("GenBetween(nil, %q) = %q, not before next", sb, result.String())
+		}
+		if result.Len() > gexorank.MaxLength {
+			t.Errorf("GenBetween(%q, %q) = %q exceeds MaxLength", sa, sb, result.String())
 		}
 		if prev != nil && next != nil {
 			lo, hi := *prev, *next
@@ -948,19 +1030,19 @@ func BenchmarkBetween(b *testing.B) {
 	}
 }
 
-func BenchmarkGenNext(b *testing.B) {
+func BenchmarkAfter(b *testing.B) {
 	r := gexorank.Initial()
 	b.ReportAllocs()
 	for b.Loop() {
-		r = r.GenNext()
+		r, _ = gexorank.After(r)
 	}
 }
 
-func BenchmarkGenPrev(b *testing.B) {
+func BenchmarkBefore(b *testing.B) {
 	r := gexorank.Initial()
 	b.ReportAllocs()
 	for b.Loop() {
-		r = r.GenPrev()
+		r, _ = gexorank.Before(r)
 	}
 }
 
