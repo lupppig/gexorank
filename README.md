@@ -8,8 +8,11 @@ Reorder items in a list by updating **one row** instead of re-indexing the entir
 
 ## Features
 
-- ero dependencies
-- Immutable & concurrent
+- Zero dependencies
+- Immutable & concurrency-safe
+- Appends/prepends stay short (~840k in a row before a rank grows past 6 chars)
+- Ranks sort identically in Go and in your database (byte-wise)
+- Exhaustion is always reported as an error — never a duplicate or out-of-order rank
 - Three-bucket rebalancing
 
 ## Install
@@ -33,14 +36,14 @@ func main() {
     first := gexorank.Initial() // "0|iiiiii"
 
     // Append after it
-    second, _ := gexorank.GenBetween(&first, nil) // "0|iiiiiii"
+    second, _ := gexorank.GenBetween(&first, nil) // "0|iiijii"
 
     // Insert between
     middle, _ := gexorank.GenBetween(&first, &second) // midpoint
 
     fmt.Println(first)  // 0|iiiiii
-    fmt.Println(middle) // 0|iiiiii9
-    fmt.Println(second) // 0|iiiiiii
+    fmt.Println(middle) // 0|iiij0i
+    fmt.Println(second) // 0|iiijii
 }
 ```
 
@@ -51,11 +54,13 @@ func main() {
 | Function | Description |
 |---|---|
 | `Initial()` | First rank in bucket 0 (midpoint of space) |
-| `Min()` | Minimum possible rank in bucket 0 |
-| `Max()` | Maximum possible rank in bucket 0 |
+| `Min()` | `"0\|000000"` — nothing can be generated before it |
+| `Max()` | `"0\|zzzzzz"` — largest 6-char rank (longer ranks can follow it) |
 | `Parse(s)` | Parse & validate a rank string like `"0\|abc123"` |
 | `Between(a, b)` | Midpoint between two ranks (same bucket) |
+| `After(r)` / `Before(r)` | Rank after / before `r`, or `ErrRankExhausted` |
 | `GenBetween(prev, next)` | **Recommended.** Nil-safe insert: prepend, append, or between |
+| `InsertBetween(...)` / `InsertBetweenFunc(...)` | Read → compute → write with retry on unique-constraint conflicts |
 | `Rebalance(ranks, bucket)` | Redistribute ranks evenly into a target bucket |
 | `Sort(ranks)` | Sort a slice of LexoRanks in ascending order |
 
@@ -63,8 +68,8 @@ func main() {
 
 | Method | Description |
 |---|---|
-| `GenNext()` | Rank after this one |
-| `GenPrev()` | Rank before this one |
+| `GenNext()` / `GenPrev()` | **Deprecated** — use `After` / `Before`. Panics if the space is exhausted |
+| `IsZero()` | True for an unset (zero-value) rank |
 | `Bucket()` | Returns the bucket (0, 1, or 2) |
 | `RankString()` | Raw rank value without bucket prefix |
 | `String()` | Full string: `"{bucket}\|{value}"` |
@@ -75,7 +80,15 @@ func main() {
 | `MaxLen()` | Maximum allowed length (128) before exhaustion |
 | `NeedsRebalance(t)` | True if `Len() >= t * MaxLen()` (e.g. `t=0.75`) |
 
-LexoRank also implements `database/sql.Scanner`, `driver.Valuer`, `json.Marshaler`, `json.Unmarshaler`, `encoding.TextMarshaler`, and `encoding.TextUnmarshaler` — it works seamlessly with GORM, sqlx, and JSON APIs.
+LexoRank also implements `database/sql.Scanner`, `driver.Valuer`, `json.Marshaler`, `json.Unmarshaler`, `encoding.TextMarshaler`, and `encoding.TextUnmarshaler` — it works seamlessly with GORM, sqlx, and JSON APIs. A zero-value rank is stored as SQL `NULL` / JSON `null`, and reads back as the zero value.
+
+### Errors
+
+| Error | Meaning |
+|---|---|
+| `ErrRankExhausted` | No rank fits at the requested position within 128 chars — run `Rebalance` |
+| `ErrConflict` | Return (or wrap) this from an `InsertFunc` to signal a duplicate rank |
+| `ErrMaxRetriesExceeded` | `InsertBetween` hit a conflict on every attempt |
 
 ## `GenBetween` — The One Function You Need
 
@@ -97,19 +110,19 @@ rank, _ = gexorank.GenBetween(&prevRank, &nextRank)
 
 ## Database Integration
 
-LexoRank values are plain strings. Store them in a `VARCHAR` or `TEXT` column with an index:
+LexoRank values are plain strings ordered **byte-wise**. Store them in a column with a binary collation so `ORDER BY` matches `CompareTo` (PostgreSQL `COLLATE "C"`, MySQL `utf8mb4_bin`, SQLite's default `BINARY`):
 
 ```sql
 CREATE TABLE tasks (
-    id    BIGSERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    rank  VARCHAR(256) NOT NULL
+    id      BIGSERIAL PRIMARY KEY,
+    list_id BIGINT NOT NULL,
+    title   TEXT NOT NULL,
+    rank    VARCHAR(256) COLLATE "C" NOT NULL,
+    UNIQUE (list_id, rank) -- also serves as the ordering index
 );
 
-CREATE INDEX idx_tasks_rank ON tasks (rank);
-
 -- Query in order:
-SELECT * FROM tasks ORDER BY rank ASC;
+SELECT * FROM tasks WHERE list_id = $1 ORDER BY rank ASC;
 ```
 
 ### GORM Example
@@ -118,7 +131,7 @@ SELECT * FROM tasks ORDER BY rank ASC;
 type Task struct {
     ID    uint      `gorm:"primaryKey"`
     Title string    `gorm:"not null"`
-    Rank  gexorank.LexoRank `gorm:"not null;index;type:varchar(256)"`
+    Rank  gexorank.LexoRank `gorm:"not null;uniqueIndex;type:varchar(256) collate \"C\""`
 }
 
 // Append a new task
@@ -149,10 +162,21 @@ rank, err := gexorank.InsertBetween(
         return &prev.Rank, &next.Rank, nil
     },
     func(rank gexorank.LexoRank) error {
-        return db.Create(&Task{Title: "New", Rank: rank}).Error
+        err := db.Create(&Task{Title: "New", Rank: rank}).Error
+        if errors.Is(err, gorm.ErrDuplicatedKey) { // needs gorm.Config{TranslateError: true}
+            return fmt.Errorf("%w: %w", gexorank.ErrConflict, err)
+        }
+        return err
     },
-    3, // max retries
+    3, // max attempts
 )
+```
+
+Only errors wrapping `gexorank.ErrConflict` are retried; any other error (e.g. a lost connection) is returned immediately. Alternatively, pass your own classifier:
+
+```go
+rank, err := gexorank.InsertBetweenFunc(neighbors, insert,
+    func(err error) bool { return errors.Is(err, gorm.ErrDuplicatedKey) }, 3)
 ```
 
 > **Requires** a `UNIQUE` constraint on the rank column so concurrent duplicates trigger a retry.
@@ -200,9 +224,12 @@ func InsertBetween(db *gorm.DB, prev, next *gexorank.LexoRank, title string) err
             return err
         }
 
-        result := db.Create(&Task{Title: title, Rank: newRank})
-        if result.Error == nil {
+        err = db.Create(&Task{Title: title, Rank: newRank}).Error
+        if err == nil {
             return nil
+        }
+        if !errors.Is(err, gorm.ErrDuplicatedKey) {
+            return err // not a conflict — don't retry
         }
 
         // Conflict — re-read neighbors and retry
@@ -226,7 +253,7 @@ func InsertBetween(db *gorm.DB, prev, next *gexorank.LexoRank, title string) err
 
 ## Rebalancing
 
-When ranks are inserted repeatedly between the same two neighbors, the rank strings grow longer. When they exceed `MaxLength` (128 chars), `Between` returns `ErrRankExhausted`.
+When ranks are inserted repeatedly between the same two neighbors, the rank strings grow longer (about one character per 5 inserts into the same gap). When no rank fits within `MaxLength` (128 chars), `Between`, `After`, `Before` and `GenBetween` return `ErrRankExhausted`. Appends and prepends are cheap: about 840,000 in a row fit in 6 characters.
 
 ### Monitoring
 
@@ -243,7 +270,7 @@ if newRank.NeedsRebalance(0.75) {
 **Recovery pattern:**
 
 ```go
-mid, err := gexorank.Between(a, b)
+mid, err := gexorank.GenBetween(&prev, &next)
 if errors.Is(err, gexorank.ErrRankExhausted) {
     // Fetch all ranks, rebalance into the next bucket
     allRanks := fetchAllRanksSorted()
@@ -264,11 +291,11 @@ goos: linux
 goarch: amd64
 cpu: Intel(R) Core(TM) i7-7600U CPU @ 2.80GHz
 
-BenchmarkParse-4            22131580        53.32 ns/op      32 B/op    1 allocs/op
-BenchmarkBetween-4           1327888       899.9 ns/op      264 B/op   12 allocs/op
-BenchmarkGenNext-4             67490     15624 ns/op        910 B/op   10 allocs/op
-BenchmarkGenPrev-4             46514     24085 ns/op        910 B/op   10 allocs/op
-BenchmarkRebalance100-4        30820     35825 ns/op      10872 B/op  513 allocs/op
+BenchmarkParse-4           11119063       107.4 ns/op      32 B/op    1 allocs/op
+BenchmarkBetween-4           629113      1649 ns/op       264 B/op   12 allocs/op
+BenchmarkAfter-4             700866      2322 ns/op       352 B/op   13 allocs/op
+BenchmarkBefore-4            672405      1793 ns/op       208 B/op   10 allocs/op
+BenchmarkRebalance100-4       25782     43050 ns/op      9249 B/op  309 allocs/op
 ```
 
 Run locally: `go test -bench=. -benchmem ./...`

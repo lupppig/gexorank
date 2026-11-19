@@ -12,9 +12,15 @@
 //
 // # Quick Start
 //
-//	first := gexorank.Initial()                          // "0|iiiiii"
-//	second := first.GenNext()                            // "0|rrrrrr"
-//	between, err := gexorank.Between(first, second)      // midpoint
+//	first := gexorank.Initial()                     // "0|iiiiii"
+//	second, err := gexorank.GenBetween(&first, nil) // "0|iiijii" (append)
+//	middle, err := gexorank.GenBetween(&first, &second)
+//
+// # Ordering
+//
+// Ranks are ordered by plain byte-wise string comparison. Store them in a
+// column with a binary collation (e.g. PostgreSQL COLLATE "C", MySQL
+// utf8mb4_bin) so that ORDER BY matches [LexoRank.CompareTo].
 //
 // # Rebalancing
 //
@@ -25,13 +31,12 @@ package gexorank
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"sort"
 	"strings"
-
-	"github.com/lupppig/gexorank/internal/alphabet"
 )
 
 const (
@@ -42,6 +47,11 @@ const (
 // ErrRankExhausted is returned when rank precision would exceed MaxLength.
 // Callers should respond by rebalancing ranks via [Rebalance].
 var ErrRankExhausted = errors.New("gexorank: rank exhausted, rebalancing required")
+
+// IsZero reports whether r is the zero value (an unset rank).
+func (r LexoRank) IsZero() bool {
+	return r.value.value == ""
+}
 
 // LexoRank is an immutable rank identifier consisting of a bucket and a value.
 // The string format is "{bucket}|{value}", e.g. "0|hzzzzz".
@@ -54,10 +64,13 @@ type LexoRank struct {
 
 // Scan implements [database/sql.Scanner] so a LexoRank can be read directly
 // from a database column. The column value must be a string or []byte in the
-// format "{bucket}|{value}".
+// format "{bucket}|{value}". A NULL column scans into the zero value.
 func (r *LexoRank) Scan(src any) error {
 	var s string
 	switch v := src.(type) {
+	case nil:
+		*r = LexoRank{}
+		return nil
 	case string:
 		s = v
 	case []byte:
@@ -74,33 +87,33 @@ func (r *LexoRank) Scan(src any) error {
 }
 
 // Value implements [database/sql/driver.Valuer] so a LexoRank can be written
-// directly to a database column as a string.
+// directly to a database column as a string. The zero value is written as NULL.
 func (r LexoRank) Value() (driver.Value, error) {
-	if r.value.value == "" {
+	if r.IsZero() {
 		return nil, nil
 	}
 	return r.String(), nil
 }
 
 // MarshalJSON implements [encoding/json.Marshaler] so a LexoRank serializes
-// as a JSON string (e.g. "0|iiiiii") rather than a struct.
+// as a JSON string (e.g. "0|iiiiii") rather than a struct. The zero value is
+// encoded as null.
 func (r LexoRank) MarshalJSON() ([]byte, error) {
-	if r.value.value == "" {
+	if r.IsZero() {
 		return []byte("null"), nil
 	}
-	return []byte(`"` + r.String() + `"`), nil
+	return json.Marshal(r.String())
 }
 
 // UnmarshalJSON implements [encoding/json.Unmarshaler] so a LexoRank can be
-// deserialized from a JSON string.
+// deserialized from a JSON string. A JSON null leaves r unchanged.
 func (r *LexoRank) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
 		return nil
 	}
-	// Strip surrounding quotes.
-	s := string(data)
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		s = s[1 : len(s)-1]
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("gexorank: rank must be a JSON string: %w", err)
 	}
 	parsed, err := Parse(s)
 	if err != nil {
@@ -110,13 +123,22 @@ func (r *LexoRank) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalText implements [encoding.TextMarshaler].
+// MarshalText implements [encoding.TextMarshaler]. The zero value is encoded
+// as empty text.
 func (r LexoRank) MarshalText() ([]byte, error) {
+	if r.IsZero() {
+		return []byte{}, nil
+	}
 	return []byte(r.String()), nil
 }
 
-// UnmarshalText implements [encoding.TextUnmarshaler].
+// UnmarshalText implements [encoding.TextUnmarshaler]. Empty text decodes to
+// the zero value.
 func (r *LexoRank) UnmarshalText(data []byte) error {
+	if len(data) == 0 {
+		*r = LexoRank{}
+		return nil
+	}
 	parsed, err := Parse(string(data))
 	if err != nil {
 		return err
@@ -156,7 +178,8 @@ func Initial() LexoRank {
 	}
 }
 
-// Min returns the minimum possible rank in bucket 0.
+// Min returns the minimum possible rank in bucket 0 ("0|000000").
+// No rank can be generated before it; [Before] returns [ErrRankExhausted].
 func Min() LexoRank {
 	return LexoRank{
 		bucket: Bucket0,
@@ -164,7 +187,8 @@ func Min() LexoRank {
 	}
 }
 
-// Max returns the maximum possible rank in bucket 0.
+// Max returns the largest rank of [DefaultLength] in bucket 0 ("0|zzzzzz").
+// Longer ranks such as "0|zzzzzzi" can still be generated after it.
 func Max() LexoRank {
 	return LexoRank{
 		bucket: Bucket0,
@@ -173,8 +197,8 @@ func Max() LexoRank {
 }
 
 // Between returns a new LexoRank that sorts between a and b.
-// Both ranks must be in the same bucket. If no midpoint can be computed
-// without exceeding [MaxLength], [ErrRankExhausted] is returned.
+// Both ranks must be in the same bucket; their order does not matter. If no
+// rank fits between them within [MaxLength], [ErrRankExhausted] is returned.
 func Between(a, b LexoRank) (LexoRank, error) {
 	if a.bucket != b.bucket {
 		return LexoRank{}, fmt.Errorf("gexorank: cannot compute midpoint across buckets %s and %s", a.bucket, b.bucket)
@@ -208,50 +232,64 @@ func GenBetween(prev, next *LexoRank) (LexoRank, error) {
 	case prev == nil && next == nil:
 		return Initial(), nil
 	case prev == nil:
-		return next.GenPrev(), nil
+		return Before(*next)
 	case next == nil:
-		return prev.GenNext(), nil
+		return After(*prev)
 	default:
 		return Between(*prev, *next)
 	}
 }
 
-// GenNext returns a new LexoRank that sorts after r.
+// After returns a new LexoRank in the same bucket that sorts after r, leaving
+// room for future inserts on either side. Repeated appends keep ranks at
+// [DefaultLength] for roughly 840,000 calls before they start to grow.
 //
-// It appends the midpoint character to r's value, producing a rank that
-// lexicographically sorts after r while leaving room for future inserts.
-// This is O(1) and avoids big.Int convergence toward the maximum.
-func (r LexoRank) GenNext() LexoRank {
-	// "iiiiii" + "i" = "iiiiiii" which sorts after "iiiiii" and before "zzzzzz".
-	v := r.value.value + string(alphabet.Mid())
-	if len(v) > MaxLength {
-		// Fallback: increment the value directly.
-		return LexoRank{bucket: r.bucket, value: r.value.Increment()}
+// It returns [ErrRankExhausted] if no rank after r fits within [MaxLength].
+func After(r LexoRank) (LexoRank, error) {
+	v, err := r.value.after()
+	if err != nil {
+		return LexoRank{}, err
 	}
-	return LexoRank{bucket: r.bucket, value: newRankValue(v)}
+	return LexoRank{bucket: r.bucket, value: v}, nil
 }
 
-// GenPrev returns a new LexoRank that sorts before r.
+// Before returns a new LexoRank in the same bucket that sorts before r,
+// leaving room for future inserts on either side.
 //
-// It decrements the last character of r's value and appends the midpoint
-// character, producing a rank that sorts before r. This is O(1) and avoids
-// big.Int convergence toward the minimum.
-func (r LexoRank) GenPrev() LexoRank {
-	// If value is already at minimum (all zeros), there is no rank that
-	// sorts before it. Return as-is — this is the floor of the ranking space.
-	minVal := MinValue(r.value.Len())
-	if r.value.CompareTo(minVal) == 0 {
-		return r
+// It returns [ErrRankExhausted] if no rank before r fits within [MaxLength],
+// for example when r is [Min].
+func Before(r LexoRank) (LexoRank, error) {
+	v, err := r.value.before()
+	if err != nil {
+		return LexoRank{}, err
 	}
+	return LexoRank{bucket: r.bucket, value: v}, nil
+}
 
-	// "iiiiii" → decrement last → "iiiiih", then append "i" → "iiiiihi"
-	// "iiiiihi" sorts after "iiiiih" and before "iiiiii".
-	dec := r.value.Decrement()
-	v := dec.value + string(alphabet.Mid())
-	if len(v) > MaxLength {
-		return LexoRank{bucket: r.bucket, value: dec}
+// GenNext returns a new LexoRank that sorts after r. See [After].
+//
+// It panics if the rank space after r is exhausted.
+//
+// Deprecated: Use [After] or [GenBetween], which return an error instead.
+func (r LexoRank) GenNext() LexoRank {
+	next, err := After(r)
+	if err != nil {
+		panic(fmt.Sprintf("gexorank: GenNext(%s): %v", r, err))
 	}
-	return LexoRank{bucket: r.bucket, value: newRankValue(v)}
+	return next
+}
+
+// GenPrev returns a new LexoRank that sorts before r. See [Before].
+//
+// It panics if the rank space before r is exhausted (e.g. r is [Min]).
+//
+// Deprecated: Use [Before] or [GenBetween], which return an error instead.
+func (r LexoRank) GenPrev() LexoRank {
+	prev, err := Before(r)
+	if err != nil {
+		panic(fmt.Sprintf("gexorank: GenPrev(%s): %v", r, err))
+	}
+	return prev
 }
 
 // Bucket returns the bucket of this rank.
@@ -267,7 +305,7 @@ func (r LexoRank) RankString() string {
 // Len returns the length of the rank value string (excluding the bucket prefix
 // and separator). A freshly created rank via [Initial] has a length of 6.
 // As ranks are inserted between close neighbors, precision expands and Len
-// grows. When it reaches [MaxLen], [Between] returns [ErrRankExhausted].
+// grows. When it reaches [LexoRank.MaxLen], [Between] returns [ErrRankExhausted].
 func (r LexoRank) Len() int {
 	return len(r.value.value)
 }
@@ -297,8 +335,9 @@ func (r LexoRank) String() string {
 	return r.bucket.String() + separator + r.value.String()
 }
 
-// CompareTo compares two LexoRanks. Bucket is compared first,
-// then the rank value is compared lexicographically.
+// CompareTo compares two LexoRanks. Bucket is compared first, then the rank
+// value is compared byte-wise, matching the order of [LexoRank.String] in a
+// database column with a binary collation.
 // It returns -1, 0, or 1.
 func (r LexoRank) CompareTo(other LexoRank) int {
 	if r.bucket < other.bucket {
@@ -339,44 +378,29 @@ func Rebalance(ranks []LexoRank, bucket Bucket) []LexoRank {
 	}
 
 	result := make([]LexoRank, n)
+	divisor := big.NewInt(int64(n + 1))
 
-	// Use the full base36 space for DefaultLength.
-	min := strToBigInt(strings.Repeat(string(alphabet.Min()), DefaultLength))
-	max := strToBigInt(strings.Repeat(string(alphabet.Max()), DefaultLength))
-
-	// space = max - min
-	space := new(largeBigInt).Sub(max, min)
-
-	// step = space / (n + 1)
-	divisor := newLargeBigInt(int64(n + 1))
-	step := new(largeBigInt).Div(space, divisor)
-
-	// If step is zero (too many items for DefaultLength), use a longer length.
-	if step.Sign() == 0 {
-		length := DefaultLength + 2
-		min = strToBigInt(strings.Repeat(string(alphabet.Min()), length))
-		max = strToBigInt(strings.Repeat(string(alphabet.Max()), length))
-		space = new(largeBigInt).Sub(max, min)
-		step = new(largeBigInt).Div(space, divisor)
+	// Use the shortest length whose space leaves a non-zero gap between ranks.
+	length := DefaultLength
+	var step *big.Int
+	for {
+		space := new(big.Int).Exp(bigBase, big.NewInt(int64(length)), nil)
+		space.Sub(space, bigOne) // "zzz…"
+		step = new(big.Int).Div(space, divisor)
+		if step.Sign() > 0 {
+			break
+		}
+		length++
 	}
 
-	for i := 0; i < n; i++ {
-		// rank_i = min + step * (i + 1)
-		offset := new(largeBigInt).Mul(step, newLargeBigInt(int64(i+1)))
-		val := new(largeBigInt).Add(min, offset)
-		str := bigIntToStr(val, DefaultLength)
+	for i := range n {
+		// rank_i = step * (i + 1), strictly inside (0, "zzz…").
+		val := new(big.Int).Mul(step, big.NewInt(int64(i+1)))
+		str := trimTrailingZeros(bigIntToStr(val, length))
 		result[i] = LexoRank{bucket: bucket, value: newRankValue(str)}
 	}
 
 	return result
-}
-
-// largeBigInt is an alias to make the Rebalance code cleaner.
-type largeBigInt = big.Int
-
-// newLargeBigInt creates a new big.Int from an int64.
-func newLargeBigInt(v int64) *big.Int {
-	return big.NewInt(v)
 }
 
 // Sort sorts a slice of LexoRanks in ascending order.
